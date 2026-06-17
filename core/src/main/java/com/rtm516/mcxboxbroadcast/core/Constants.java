@@ -27,6 +27,7 @@ public class Constants {
     public static final URI CREATE_HANDLE = URI.create("https://sessiondirectory.xboxlive.com/handles");
 
     public static final String PEOPLE = "https://social.xboxlive.com/users/me/people/xuid(%s)";
+    public static final String SOCIAL_BULK = "https://social.xboxlive.com/bulk/users/me/people/friends/v2?method=%s";
     public static final String USER_PRESENCE = "https://userpresence.xboxlive.com/users/xuid(%s)/devices/current/titles/current";
     public static final URI FOLLOWERS = URI.create("https://peoplehub.xboxlive.com/users/me/people/followers");
     public static final URI SOCIAL = URI.create("https://peoplehub.xboxlive.com/users/me/people/social");
@@ -47,6 +48,11 @@ public class Constants {
      * Used to be 1000, but the limit was increased in Aug 2024
      */
     public static final int MAX_FRIENDS = 2000;
+
+    /**
+     * The maximum number of friends to add/remove in a single bulk request
+     */
+    public static final int BULK_FRIEND_LIMIT = 100;
 
     /**
      * Used for the micro nethernet server that transfers the client to the real server

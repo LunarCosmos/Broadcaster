@@ -206,6 +206,36 @@ public class FriendManager {
         callInternalProcess();
     }
 
+    /**
+     * Queue every current friend for removal and start processing immediately.
+     * Removals are batched through the bulk endpoint so this is much faster than
+     * removing friends individually.
+     *
+     * @return The number of friends queued for removal
+     * @throws XboxFriendsException If there was an error getting the current friends from Xbox Live
+     */
+    public int removeAll() throws XboxFriendsException {
+        int queued = 0;
+        for (FollowerResponse.Person person : get()) {
+            // Only remove people we are actually following (i.e. our friends)
+            if (!person.isFollowedByCaller) {
+                continue;
+            }
+
+            String gamertag = person.gamertag != null ? person.gamertag : person.displayName;
+
+            // Make sure they aren't queued to be added then queue the removal
+            toAdd.remove(person.xuid);
+            toRemove.put(person.xuid, gamertag);
+            queued++;
+        }
+
+        // Start processing the removals
+        callInternalProcess();
+
+        return queued;
+    }
+
     public void init(CoreConfig.FriendSyncConfig friendSyncConfig) {
         shouldAcceptPendingRequests = friendSyncConfig.autoFollow();
 
@@ -434,50 +464,79 @@ public class FriendManager {
             }
         }
 
-        // If we have friends to remove then remove them
+        // If we have friends to remove then remove them in bulk
         // Note: This can be run even if add hits the rate limit as it seems to be separate
         if (!toRemove.isEmpty()) {
-            // Create a copy of the list to iterate over, so we don't get a concurrent modification exception
+            // Copy the queue so we can look up gamertags for logging and avoid concurrent modification
             Map<String, String> toProcess = new HashMap<>(toRemove);
-            for (Map.Entry<String, String> entry : toProcess.entrySet()) {
-                // Create the request for removing the friend
-                HttpRequest xboxFriendRequest = HttpRequest.newBuilder()
-                        .uri(URI.create(Constants.PEOPLE.formatted(entry.getKey())))
+            List<String> xuids = new ArrayList<>(toProcess.keySet());
+
+            // Remove friends in chunks using the bulk endpoint. This is a single request per
+            // chunk instead of one request per friend, so it's drastically faster than removing
+            // them one at a time (which is what made bulk removal so slow before).
+            for (int i = 0; i < xuids.size(); i += Constants.BULK_FRIEND_LIMIT) {
+                List<String> chunk = xuids.subList(i, Math.min(i + Constants.BULK_FRIEND_LIMIT, xuids.size()));
+
+                HttpRequest bulkRemoveRequest = HttpRequest.newBuilder()
+                        .uri(URI.create(Constants.SOCIAL_BULK.formatted("remove")))
                         .header("Authorization", sessionManager.getTokenHeader())
-                        .DELETE()
+                        .POST(HttpRequest.BodyPublishers.ofString(Constants.GSON.toJson(Map.of("xuids", chunk))))
                         .build();
 
                 try {
-                    HttpResponse<String> response = httpClient.send(xboxFriendRequest, HttpResponse.BodyHandlers.ofString());
-                    if (response.statusCode() == 204) {
-                        // The friend was removed successfully so remove them from the list
-                        toRemove.remove(entry.getKey());
+                    HttpResponse<String> response = httpClient.send(bulkRemoveRequest, HttpResponse.BodyHandlers.ofString());
 
-                        // Let the user know we removed a friend
-                        logger.info("Removed " + entry.getValue() + " (" + entry.getKey() + ") as a friend");
-
-                        sessionManager.storageManager().playerHistory().clear(entry.getKey());
-
-                        // Update the user in the cache
-                        Optional<FollowerResponse.Person> friend = lastFriendCache.stream().filter(p -> p.xuid.equals(entry.getKey())).findFirst();
-                        friend.ifPresent(person -> person.isFollowedByCaller = false);
-                    } else if (response.statusCode() == 429) {
-                        // The friend wasn't removed successfully so get the retry after header
+                    if (response.statusCode() == 429) {
+                        // We got rate limited so note the retry after header and stop for now
                         Optional<String> header = response.headers().firstValue("Retry-After");
                         if (header.isPresent()) {
                             retryAfter = Integer.parseInt(header.get());
                         }
 
-                        // Log the error
-                        logger.debug("Failed to remove " + entry.getValue() + " (" + entry.getKey() + ") as a friend: (" + response.statusCode() + ") " + response.body());
+                        logger.debug("Rate limited while removing friends in bulk: (" + response.statusCode() + ") " + response.body());
 
                         // Break out of the loop, so we don't try to remove more friends
                         break;
-                    } else {
-                        logger.warn("Failed to remove " + entry.getValue() + " (" + entry.getKey() + ") as a friend: (" + response.statusCode() + ") " + response.body());
+                    }
+
+                    // Anything other than a success means the whole chunk failed; leave them queued to retry
+                    if (response.statusCode() != 200 && response.statusCode() != 204) {
+                        logger.warn("Failed to remove friends in bulk: (" + response.statusCode() + ") " + response.body());
+                        continue;
+                    }
+
+                    // A 204 has no body so assume the whole chunk was removed, otherwise trust the response
+                    List<String> removed = chunk;
+                    List<String> failed = List.of();
+                    if (response.statusCode() == 200 && !response.body().isEmpty()) {
+                        FriendRequestAcceptResponse bulkResponse = Constants.GSON.fromJson(response.body(), FriendRequestAcceptResponse.class);
+                        if (bulkResponse != null) {
+                            if (bulkResponse.updatedPeople != null) removed = bulkResponse.updatedPeople;
+                            if (bulkResponse.failedToUpdate != null) failed = bulkResponse.failedToUpdate;
+                        }
+                    }
+
+                    for (String xuid : removed) {
+                        // The friend was removed successfully so take them off the queue
+                        toRemove.remove(xuid);
+
+                        // Let the user know we removed a friend
+                        logger.info("Removed " + toProcess.getOrDefault(xuid, "Unknown") + " (" + xuid + ") as a friend");
+
+                        sessionManager.storageManager().playerHistory().clear(xuid);
+
+                        // Update the user in the cache
+                        lastFriendCache.stream().filter(p -> p.xuid.equals(xuid)).findFirst()
+                                .ifPresent(person -> person.isFollowedByCaller = false);
+                    }
+
+                    // Drop any the API explicitly rejected so we don't retry them forever
+                    for (String xuid : failed) {
+                        toRemove.remove(xuid);
+                        logger.warn("Failed to remove " + toProcess.getOrDefault(xuid, "Unknown") + " (" + xuid + ") as a friend, skipping");
                     }
                 } catch (IOException | InterruptedException e) {
-                    logger.error("Failed to remove " + entry.getValue() + " (" + entry.getKey() + ") as a friend: " + e.getMessage());
+                    logger.error("Failed to remove friends in bulk: " + e.getMessage());
                     break;
                 }
             }
@@ -566,7 +625,7 @@ public class FriendManager {
 
             // Accept the friend requests
             HttpRequest acceptRequests = HttpRequest.newBuilder()
-                .uri(URI.create("https://social.xboxlive.com/bulk/users/me/people/friends/v2?method=add"))
+                .uri(URI.create(Constants.SOCIAL_BULK.formatted("add")))
                 .header("Authorization", sessionManager.getTokenHeader())
                 .POST(HttpRequest.BodyPublishers.ofString(Constants.GSON.toJson(Map.of("xuids", xuids))))
                 .build();

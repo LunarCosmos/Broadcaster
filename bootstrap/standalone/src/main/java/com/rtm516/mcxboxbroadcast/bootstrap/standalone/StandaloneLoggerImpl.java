@@ -99,6 +99,21 @@ public class StandaloneLoggerImpl extends SimpleTerminalConsole implements Logge
                         default -> warn("Unknown accounts command: " + args[0]);
                     }
                 }
+                case "friends" -> {
+                    if (args.length == 0) {
+                        warn("Usage:");
+                        warn("friends purge - Remove all friends");
+                        return;
+                    }
+
+                    switch (args[0].toLowerCase()) {
+                        case "purge", "clear", "removeall" -> {
+                            int queued = StandaloneMain.sessionManager.friendManager().removeAll();
+                            info("Queued " + queued + " friend(s) for removal, this is processed in bulk in the background");
+                        }
+                        default -> warn("Unknown friends command: " + args[0]);
+                    }
+                }
                 case "version" -> info("MCXboxBroadcast Standalone " + BuildData.VERSION);
                 case "help" -> {
                     info("Available commands:");
@@ -108,6 +123,7 @@ public class StandaloneLoggerImpl extends SimpleTerminalConsole implements Logge
                     info("accounts list - List sub-accounts");
                     info("accounts add <sub-session-id> - Add a sub-account");
                     info("accounts remove <sub-session-id> - Remove a sub-account");
+                    info("friends purge - Remove all friends");
                     info("version - Display the version");
                 }
                 default -> warn("Unknown command: " + commandNode);
