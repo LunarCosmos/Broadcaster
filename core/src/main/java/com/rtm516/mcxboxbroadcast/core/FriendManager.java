@@ -487,11 +487,17 @@ public class FriendManager {
                     HttpResponse<String> response = httpClient.send(bulkRemoveRequest, HttpResponse.BodyHandlers.ofString());
 
                     if (response.statusCode() == 429) {
-                        // We got rate limited so note the retry after header and stop for now
-                        Optional<String> header = response.headers().firstValue("Retry-After");
-                        if (header.isPresent()) {
-                            retryAfter = Integer.parseInt(header.get());
-                        }
+                        // We got rate limited; back off using Retry-After, falling back to a
+                        // default so a missing/garbled header doesn't make us busy-loop the API
+                        retryAfter = response.headers().firstValue("Retry-After")
+                                .map(value -> {
+                                    try {
+                                        return Integer.parseInt(value.trim());
+                                    } catch (NumberFormatException e) {
+                                        return Constants.DEFAULT_RETRY_AFTER_SECONDS;
+                                    }
+                                })
+                                .orElse(Constants.DEFAULT_RETRY_AFTER_SECONDS);
 
                         logger.debug("Rate limited while removing friends in bulk: (" + response.statusCode() + ") " + response.body());
 

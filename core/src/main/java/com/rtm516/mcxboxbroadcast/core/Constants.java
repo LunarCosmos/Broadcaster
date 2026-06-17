@@ -55,6 +55,12 @@ public class Constants {
     public static final int BULK_FRIEND_LIMIT = 100;
 
     /**
+     * Fallback backoff (in seconds) to use when we get rate limited but the
+     * response is missing a usable Retry-After header, so we don't busy-loop
+     */
+    public static final int DEFAULT_RETRY_AFTER_SECONDS = 30;
+
+    /**
      * Used for the micro nethernet server that transfers the client to the real server
      */
     public static final BedrockCodec BEDROCK_CODEC = Bedrock_v1001.CODEC;
