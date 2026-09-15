@@ -9,7 +9,6 @@ import java.io.IOException;
 import java.security.PublicKey;
 import java.time.Instant;
 import java.util.UUID;
-import java.util.concurrent.TimeUnit;
 import org.cloudburstmc.math.vector.Vector2f;
 import org.cloudburstmc.math.vector.Vector3f;
 import org.cloudburstmc.math.vector.Vector3i;
@@ -42,8 +41,6 @@ import org.cloudburstmc.protocol.common.PacketSignal;
 import org.cloudburstmc.protocol.common.util.OptionalBoolean;
 
 public class RedirectPacketHandler implements BedrockPacketHandler {
-    private static final long TRANSFER_CLOSE_DELAY_MS = 1000;
-
 
     private final BedrockServerSession session;
     private final SessionInfo sessionInfo;
@@ -241,15 +238,7 @@ public class RedirectPacketHandler implements BedrockPacketHandler {
         TransferPacket transferPacket = new TransferPacket();
         transferPacket.setAddress(sessionInfo.getIp());
         transferPacket.setPort(sessionInfo.getPort());
-        session.sendPacketImmediately(transferPacket);
-
-        // 26.50 clients show a connection error ("boat") if the NetherNet hop is left open while they
-        // connect to the target server, so end it ourselves once the transfer packet has gone out
-        session.getPeer().getChannel().eventLoop().schedule(() -> {
-            if (session.isConnected()) {
-                session.close("Transferred to target server");
-            }
-        }, TRANSFER_CLOSE_DELAY_MS, TimeUnit.MILLISECONDS);
+        session.sendPacket(transferPacket);
 
         try {
             if (identityData != null) {
